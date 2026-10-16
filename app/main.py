@@ -7,6 +7,7 @@ from app import db
 from app.errors import install_error_handlers
 from app.middleware import RequestIdMiddleware
 from app.migrate import run_migrations
+from app.routes import transfers, users, wallets
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,6 +23,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Digital Wallet", lifespan=lifespan)
 app.add_middleware(RequestIdMiddleware)
 install_error_handlers(app)
+app.include_router(users.router)
+app.include_router(wallets.router)
+app.include_router(transfers.router)
 
 
 @app.get("/health")
