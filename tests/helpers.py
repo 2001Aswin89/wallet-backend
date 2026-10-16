@@ -8,13 +8,15 @@ from app import db
 def new_user(http: httpx.Client, name: str = "Test", kyc: str = "verified") -> int:
     n = uuid.uuid4().int % 10**10
     r = http.post("/users", json={"name": name, "email": f"u{uuid.uuid4().hex}@example.com",
-                                  "phone": f"+91{n:010d}", "kyc_status": kyc})
+                                  "phone": f"+91{n:010d}", "kyc_status": kyc},
+                  headers={"Idempotency-Key": str(uuid.uuid4())})
     assert r.status_code == 201, r.text
     return r.json()["id"]
 
 
 def new_wallet(http: httpx.Client, user_id: int, label: str = "main") -> int:
-    r = http.post(f"/users/{user_id}/wallets", json={"label": label}, headers={"X-User-Id": str(user_id)})
+    r = http.post(f"/users/{user_id}/wallets", json={"label": label},
+                  headers={"X-User-Id": str(user_id), "Idempotency-Key": str(uuid.uuid4())})
     assert r.status_code == 201, r.text
     return r.json()["id"]
 

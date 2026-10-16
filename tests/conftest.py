@@ -11,6 +11,22 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _db_pool():
+    """Tests that use app.db directly (assertions on the database) need an open pool even
+    when no TestClient is running."""
+    from app import db
+    from app.migrate import run_migrations
+
+    run_migrations()
+    own = db.pool is None
+    if own:
+        db.open_pool()
+    yield
+    if own:
+        db.close_pool()
+
+
 @pytest.fixture(scope="session")
 def client():
     with TestClient(app) as c:  # runs lifespan: migrations + pool

@@ -82,8 +82,8 @@ def test_duplicate_user_and_wallet(client):
     r = client.post(f"/users/{uid}/wallets", json={"label": "savings"}, headers=h(uid))
     assert r.status_code == 409 and r.json()["code"] == "WALLET_EXISTS"
     body = {"name": "X", "email": "dup@example.com", "phone": "+919999900001"}
-    client.post("/users", json=body)
-    r = client.post("/users", json={**body, "phone": "+919999900002"})  # same email
+    client.post("/users", json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
+    r = client.post("/users", json={**body, "phone": "+919999900002"}, headers={"Idempotency-Key": str(uuid.uuid4())})  # same email
     assert r.status_code == 409 and r.json()["code"] == "USER_EXISTS"
 
 
