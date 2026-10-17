@@ -7,9 +7,17 @@ import httpx
 import pytest
 
 from app import db
-from tests.helpers import computed_balance, funded_wallet, ledger_totals, stored_balance
+from tests.helpers import computed_balance, funded_wallet, ledger_totals, rules_state, stored_balance
 
 RUNS = 20
+
+
+@pytest.fixture(autouse=True)
+def fraud_rules_off():
+    """100 transfers in a second would (correctly) trip VELOCITY and be held. The stampede
+    measures locking, not fraud rules, so switch them off for these tests only."""
+    with rules_state(enabled=False):
+        yield
 
 
 def _send(url, uid, src, dst, amount):

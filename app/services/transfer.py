@@ -9,6 +9,7 @@ Lock order everywhere: (1) a transfers row, if the operation targets an existing
 then (2) account rows in ascending id. One global order means no cycle, hence no deadlock.
 """
 from app.errors import AppError
+from app.services import fraud
 
 _system_ids: dict[str, int] = {}
 
@@ -40,33 +41,41 @@ def lock_accounts(conn, from_id: int, to_id: int) -> dict[int, dict]:
     return accts
 
 
+def post_entries(conn, transfer_id: int, from_id: int, to_id: int, amount: int) -> None:
+    """The balanced pair of ledger lines, and the stored balances that mirror them."""
+    conn.execute(
+        "INSERT INTO ledger_entries (transfer_id, account_id, direction, amount) "
+        "VALUES (%s, %s, 'debit', %s), (%s, %s, 'credit', %s)",
+        (transfer_id, from_id, amount, transfer_id, to_id, amount),
+    )
+    conn.execute("UPDATE accounts SET balance = balance - %s WHERE id = %s", (amount, from_id))
+    conn.execute("UPDATE accounts SET balance = balance + %s WHERE id = %s", (amount, to_id))
+
+
 def write_transfer(conn, accts: dict[int, dict], *, type: str, from_id: int, to_id: int, amount: int,
                    initiated_by: int | None, note: str | None = None,
-                   reverses_transfer_id: int | None = None) -> dict:
-    """Balance check on the LOCKED source row, then transfer row + two entries + stored balances.
+                   reverses_transfer_id: int | None = None, hold: bool = False) -> dict:
+    """Balance check on the LOCKED source row, then the transfer row. A held transfer
+    (hold=True) is stored as pending_review and moves NO money: no entries, no balance change.
     Caller must already hold the locks from lock_accounts()."""
     src = accts[from_id]
     if src["account_type"] == "user_wallet" and src["balance"] < amount:
         raise insufficient_funds()
 
+    status = "pending_review" if hold else "completed"
     t = conn.execute(
         "INSERT INTO transfers (type, status, amount, from_account_id, to_account_id, initiated_by, note, "
-        "reverses_transfer_id, completed_at) VALUES (%s, 'completed', %s, %s, %s, %s, %s, %s, now()) "
-        "RETURNING id, created_at",
-        (type, amount, from_id, to_id, initiated_by, note, reverses_transfer_id),
+        "reverses_transfer_id, completed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, "
+        "CASE WHEN %s THEN NULL ELSE now() END) RETURNING id, created_at",
+        (type, status, amount, from_id, to_id, initiated_by, note, reverses_transfer_id, hold),
     ).fetchone()
-    conn.execute(
-        "INSERT INTO ledger_entries (transfer_id, account_id, direction, amount) "
-        "VALUES (%s, %s, 'debit', %s), (%s, %s, 'credit', %s)",
-        (t["id"], from_id, amount, t["id"], to_id, amount),
-    )
-    conn.execute("UPDATE accounts SET balance = balance - %s WHERE id = %s", (amount, from_id))
-    conn.execute("UPDATE accounts SET balance = balance + %s WHERE id = %s", (amount, to_id))
+    if not hold:
+        post_entries(conn, t["id"], from_id, to_id, amount)
 
     body = {
         "transfer_id": t["id"],
         "type": type,
-        "status": "completed",
+        "status": status,
         "amount": amount,
         "from_account_id": from_id,
         "to_account_id": to_id,
@@ -81,7 +90,8 @@ def write_transfer(conn, accts: dict[int, dict], *, type: str, from_id: int, to_
 def execute_transfer(conn, *, kind: str, caller_id: int, wallet_id: int, other_wallet_id: int | None,
                      amount: int, note: str | None = None) -> dict:
     """kind: 'top_up' (CASH_IN -> wallet_id), 'peer_transfer' (wallet_id -> other_wallet_id),
-    'withdrawal' (wallet_id -> CASH_OUT). Returns the response body for the new transfer."""
+    'withdrawal' (wallet_id -> CASH_OUT). Returns the response body; body['status'] is
+    'pending_review' when a fraud rule held the transfer (HTTP 202), else 'completed' (201)."""
     conn.execute("SELECT set_config('app.actor', %s, true)", (f"user:{caller_id}",))
 
     if kind == "top_up":
@@ -108,9 +118,23 @@ def execute_transfer(conn, *, kind: str, caller_id: int, wallet_id: int, other_w
     if kyc is None or kyc["kyc_status"] == "rejected":
         raise AppError(403, "KYC_REJECTED", "user is not allowed to move money")
 
-    # 3 + 4. Re-read balance under the lock, reject if short, then write everything.
-    return write_transfer(conn, accts, type=kind, from_id=from_id, to_id=to_id, amount=amount,
-                          initiated_by=caller_id, note=note)
+    # 3. Not enough money is rejected even if a rule would hold it: do not queue the unfundable.
+    if src["account_type"] == "user_wallet" and src["balance"] < amount:
+        raise insufficient_funds()
+
+    # 4. Fraud rules, still inside the transaction and still holding the sender's lock.
+    hits = []
+    if kind != "top_up":
+        hits = fraud.evaluate_rules(conn, fraud.load_rules(conn), kind=kind, from_id=from_id,
+                                    to_id=to_id, amount=amount)
+    hold = any(h.action == "hold" for h in hits)
+
+    # 5. Write everything (or, when held, only the pending transfer row).
+    body = write_transfer(conn, accts, type=kind, from_id=from_id, to_id=to_id, amount=amount,
+                          initiated_by=caller_id, note=note, hold=hold)
+    fraud.record_flags(conn, body["transfer_id"], hits)
+    body["flags"] = [h.code for h in hits]
+    return body
     # COMMIT happens in the caller when the `with db.tx()` block exits.
 
 
@@ -146,3 +170,35 @@ def execute_reversal(conn, *, admin_actor: str, original_id: int, note: str | No
             raise AppError(409, "REVERSAL_NOT_POSSIBLE",
                            "the recipient no longer has enough balance to cover the reversal")
         raise
+
+
+def decide_held(conn, *, admin_actor: str, transfer_id: int, decision: str) -> dict:
+    """Admin resolves a held transfer. release: lock both accounts, re-check the balance (it may
+    have been spent while the transfer waited), write the entries, status completed.
+    reverse: the held transfer never moved money, so there is nothing to undo; status rejected."""
+    conn.execute("SELECT set_config('app.actor', %s, true)", (admin_actor,))
+    t = conn.execute(
+        "SELECT id, type, status, amount, from_account_id, to_account_id FROM transfers "
+        "WHERE id = %s FOR UPDATE", (transfer_id,),         # lock order: transfer row, then accounts
+    ).fetchone()
+    if t is None:
+        raise AppError(404, "TRANSFER_NOT_FOUND", "transfer does not exist")
+    if t["status"] != "pending_review":
+        raise AppError(409, "TRANSFER_NOT_HELD", f"transfer is not held for review (status is {t['status']})")
+
+    if decision == "release":
+        accts = lock_accounts(conn, t["from_account_id"], t["to_account_id"])
+        src = accts[t["from_account_id"]]
+        if src["account_type"] == "user_wallet" and src["balance"] < t["amount"]:
+            raise insufficient_funds()          # stays held; the admin can retry later or reverse it
+        conn.execute("UPDATE transfers SET status = 'completed', completed_at = now() WHERE id = %s", (transfer_id,))
+        post_entries(conn, transfer_id, t["from_account_id"], t["to_account_id"], t["amount"])
+        new_status = "completed"
+    else:
+        conn.execute("UPDATE transfers SET status = 'rejected' WHERE id = %s", (transfer_id,))
+        new_status = "rejected"
+
+    conn.execute("UPDATE risk_flags SET decision = %s, reviewed_by = %s, reviewed_at = now() "
+                 "WHERE transfer_id = %s", (decision, admin_actor, transfer_id))
+    return {"transfer_id": transfer_id, "type": t["type"], "status": new_status, "amount": t["amount"],
+            "decision": decision, "reviewed_by": admin_actor}

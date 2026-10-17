@@ -1,8 +1,30 @@
 import uuid
+from contextlib import contextmanager
 
 import httpx
 
 from app import db
+
+
+@contextmanager
+def rules_state(enabled: bool | None = None, **overrides):
+    """Temporarily change risk rules (they live in the database, so no code change is needed).
+    rules_state(enabled=False) switches every rule off; rules_state(VELOCITY={'threshold_value': 2})
+    overrides one rule. The original rows are restored afterwards."""
+    with db.tx() as conn:
+        before = conn.execute("SELECT id, code, enabled, threshold_value, window_seconds FROM risk_rules").fetchall()
+        if enabled is not None:
+            conn.execute("UPDATE risk_rules SET enabled = %s", (enabled,))
+        for code, cols in overrides.items():
+            for col, val in cols.items():
+                conn.execute(f"UPDATE risk_rules SET {col} = %s WHERE code = %s", (val, code))
+    try:
+        yield
+    finally:
+        with db.tx() as conn:
+            for r in before:
+                conn.execute("UPDATE risk_rules SET enabled=%s, threshold_value=%s, window_seconds=%s WHERE id=%s",
+                             (r["enabled"], r["threshold_value"], r["window_seconds"], r["id"]))
 
 
 def new_user(http: httpx.Client, name: str = "Test", kyc: str = "verified") -> int:

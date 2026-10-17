@@ -21,6 +21,11 @@ Caller = Annotated[int, Depends(current_user_id)]
 Key = Annotated[str, Depends(idempotency_key)]
 
 
+def _code_for(result: dict) -> int:
+    """201 when money moved, 202 when a fraud rule held the transfer for review."""
+    return 202 if result["status"] == "pending_review" else 201
+
+
 class TopUpIn(BaseModel):
     wallet_id: WalletId
     amount: Amount
@@ -57,8 +62,9 @@ def peer_transfer(body: PeerIn, caller: Caller, key: Key):
         raise AppError(422, "VALIDATION_ERROR", "from_wallet_id and to_wallet_id must differ")
 
     def work(conn):
-        return 201, execute_transfer(conn, kind="peer_transfer", caller_id=caller, wallet_id=body.from_wallet_id,
-                                     other_wallet_id=body.to_wallet_id, amount=body.amount, note=body.note)
+        result = execute_transfer(conn, kind="peer_transfer", caller_id=caller, wallet_id=body.from_wallet_id,
+                                  other_wallet_id=body.to_wallet_id, amount=body.amount, note=body.note)
+        return _code_for(result), result
     return run_idempotent(user_id=caller, key=key, method="POST", path="/transfers",
                           body=body.model_dump(), work=work)
 
@@ -114,7 +120,8 @@ def get_transfer(transfer_id: int, x_user_id: Annotated[str | None, Header()] = 
 @router.post("/transfers/withdraw", status_code=201)
 def withdraw(body: WithdrawIn, caller: Caller, key: Key):
     def work(conn):
-        return 201, execute_transfer(conn, kind="withdrawal", caller_id=caller, wallet_id=body.wallet_id,
-                                     other_wallet_id=None, amount=body.amount)
+        result = execute_transfer(conn, kind="withdrawal", caller_id=caller, wallet_id=body.wallet_id,
+                                  other_wallet_id=None, amount=body.amount)
+        return _code_for(result), result
     return run_idempotent(user_id=caller, key=key, method="POST", path="/transfers/withdraw",
                           body=body.model_dump(), work=work)
