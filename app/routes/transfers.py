@@ -74,7 +74,7 @@ def reverse(transfer_id: int, body: ReverseIn, key: Key, admin: Annotated[str, D
         return run_idempotent(user_id=None, key=key, method="POST", path=f"/transfers/{transfer_id}/reverse",
                               body=body.model_dump(), work=work)
     except psycopg.errors.UniqueViolation:  # backstop: UNIQUE (reverses_transfer_id)
-        raise AppError(409, "ALREADY_REVERSED", "this transfer has already been reversed")
+        raise AppError(409, "REVERSAL_NOT_POSSIBLE", "this transfer has already been reversed")
 
 
 @router.get("/transfers/{transfer_id}")

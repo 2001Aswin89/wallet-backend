@@ -127,14 +127,22 @@ def execute_reversal(conn, *, admin_actor: str, original_id: int, note: str | No
     ).fetchone()
     if orig is None:
         raise AppError(404, "TRANSFER_NOT_FOUND", "transfer does not exist")
+    # The brief gives reverse only 201 and 409, so every "cannot reverse" case is a 409.
     if orig["type"] == "reversal":
-        raise AppError(409, "NOT_REVERSIBLE", "a reversal cannot itself be reversed")
+        raise AppError(409, "REVERSAL_NOT_POSSIBLE", "a reversal cannot itself be reversed")
     if orig["status"] != "completed":
-        raise AppError(409, "NOT_REVERSIBLE", f"only completed transfers can be reversed (status is {orig['status']})")
+        raise AppError(409, "REVERSAL_NOT_POSSIBLE",
+                       f"only completed transfers can be reversed (status is {orig['status']})")
     if conn.execute("SELECT 1 FROM transfers WHERE reverses_transfer_id = %s", (original_id,)).fetchone():
-        raise AppError(409, "ALREADY_REVERSED", "this transfer has already been reversed")
+        raise AppError(409, "REVERSAL_NOT_POSSIBLE", "this transfer has already been reversed")
 
     accts = lock_accounts(conn, orig["to_account_id"], orig["from_account_id"])
-    return write_transfer(conn, accts, type="reversal", from_id=orig["to_account_id"],
-                          to_id=orig["from_account_id"], amount=orig["amount"], initiated_by=None,
-                          note=note, reverses_transfer_id=original_id)
+    try:
+        return write_transfer(conn, accts, type="reversal", from_id=orig["to_account_id"],
+                              to_id=orig["from_account_id"], amount=orig["amount"], initiated_by=None,
+                              note=note, reverses_transfer_id=original_id)
+    except AppError as e:
+        if e.code == "INSUFFICIENT_FUNDS":
+            raise AppError(409, "REVERSAL_NOT_POSSIBLE",
+                           "the recipient no longer has enough balance to cover the reversal")
+        raise

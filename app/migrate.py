@@ -12,11 +12,11 @@ ADVISORY_LOCK_KEY = 72_001  # arbitrary constant shared by every process that mi
 log = logging.getLogger("wallet.migrate")
 
 
-def wait_for_db(timeout: float = 60) -> None:
+def wait_for_db(dsn: str | None = None, timeout: float = 60) -> None:
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with psycopg.connect(DATABASE_URL, connect_timeout=3):
+            with psycopg.connect(dsn or DATABASE_URL, connect_timeout=3):
                 return
         except psycopg.OperationalError:
             if time.monotonic() > deadline:
@@ -24,10 +24,10 @@ def wait_for_db(timeout: float = 60) -> None:
             time.sleep(1)
 
 
-def run_migrations() -> list[str]:
-    wait_for_db()
+def run_migrations(dsn: str | None = None) -> list[str]:
+    wait_for_db(dsn)
     applied_now: list[str] = []
-    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+    with psycopg.connect(dsn or DATABASE_URL, autocommit=True) as conn:
         conn.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
         try:
             conn.execute(

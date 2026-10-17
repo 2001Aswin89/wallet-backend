@@ -53,7 +53,7 @@ def test_second_reversal_is_409_even_with_a_new_key(api):
     tid = send(api, a, wa, wb, 1_000)
     assert api.post(f"/transfers/{tid}/reverse", json={}, headers=admin_h()).status_code == 201
     r = api.post(f"/transfers/{tid}/reverse", json={}, headers=admin_h())
-    assert r.status_code == 409 and r.json()["code"] == "ALREADY_REVERSED"
+    assert r.status_code == 409 and r.json()["code"] == "REVERSAL_NOT_POSSIBLE"
 
 
 def test_concurrent_reversals_make_exactly_one(live_url, api):
@@ -74,7 +74,7 @@ def test_cannot_reverse_a_reversal_or_missing_transfer(api):
     tid = send(api, a, wa, wb, 1_000)
     rev = api.post(f"/transfers/{tid}/reverse", json={}, headers=admin_h()).json()["transfer_id"]
     r = api.post(f"/transfers/{rev}/reverse", json={}, headers=admin_h())
-    assert r.status_code == 409 and r.json()["code"] == "NOT_REVERSIBLE"
+    assert r.status_code == 409 and r.json()["code"] == "REVERSAL_NOT_POSSIBLE"
     assert api.post("/transfers/999999999/reverse", json={}, headers=admin_h()).status_code == 404
 
 
@@ -85,7 +85,7 @@ def test_reversal_fails_if_recipient_already_spent_the_money(api):
     tid = send(api, a, wa, wb, 1_000)
     send(api, b, wb, wc, 1_000)
     r = api.post(f"/transfers/{tid}/reverse", json={}, headers=admin_h())
-    assert r.status_code == 422 and r.json()["code"] == "INSUFFICIENT_FUNDS"
+    assert r.status_code == 409 and r.json()["code"] == "REVERSAL_NOT_POSSIBLE"
     with db.tx() as conn:
         n = conn.execute("SELECT count(*) AS n FROM transfers WHERE reverses_transfer_id=%s", (tid,)).fetchone()["n"]
         assert n == 0
