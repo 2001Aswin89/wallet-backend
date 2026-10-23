@@ -1,5 +1,6 @@
 """The 10 sample questions with their expected answers (Milestone 5, Part C), run through the real
 endpoint, the mock LLM and real queries on a fixed ledger. See tests/qa_story.py for the data."""
+import json
 import uuid
 
 import pytest
@@ -59,6 +60,18 @@ def test_nobody_matches_gives_zero_not_an_error(client, story):
     assert body["value"] == 5_000
     other = ask(client, story["people"]["rahul"]["uid"], "How much did I send to Priya in July 2026?").json()
     assert other["value"] == 0 and other["transfer_ids"] == []
+
+
+def test_mock_understands_this_and_last_month_from_the_prompt_date():
+    from datetime import date
+    from app.llm.mock import MockLLM
+    from app.services.statement_qa import system_prompt
+    mock = MockLLM()
+    got = json.loads(mock.complete_json(system_prompt(date(2026, 10, 23)), "How much did I send to Rahul this month?"))
+    assert got == {"type": 1, "counterparty": "Rahul", "from": "2026-10-01", "to": "2026-10-31"}
+    got = json.loads(mock.complete_json(system_prompt(date(2026, 1, 5)), "How much did I send to Rahul last month?"))
+    assert got == {"type": 1, "counterparty": "Rahul", "from": "2025-12-01", "to": "2025-12-31"}
+    assert json.loads(mock.complete_json(system_prompt(date(2026, 1, 5)), "send money to Rahul")) == {"type": 0}
 
 
 def test_ambiguous_name_returns_a_total_per_person(client):

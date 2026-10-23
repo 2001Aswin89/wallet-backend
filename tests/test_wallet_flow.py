@@ -1,7 +1,8 @@
 import uuid
 
 from app import db
-from tests.helpers import funded_wallet, new_user, new_wallet, computed_balance, stored_balance, topup
+from tests.helpers import (computed_balance, funded_wallet, new_user, new_wallet, rules_state, stored_balance,
+                           topup)
 
 
 def h(uid):
@@ -31,6 +32,27 @@ def test_peer_transfer_moves_money_and_statement_is_newest_first(client):
     assert [e["amount"] for e in page] == [200, 100]
     with db.tx() as conn:
         assert stored_balance(conn, wa) == computed_balance(conn, wa)
+
+
+def test_cursor_paging_matches_offset_paging_with_no_gaps_or_repeats(client):
+    uid, wid = funded_wallet(client, 1_000_000)
+    with rules_state(enabled=False):      # 7 quick withdrawals would otherwise trip VELOCITY
+        for i in range(1, 8):
+            assert client.post("/transfers/withdraw", json={"wallet_id": wid, "amount": i},
+                               headers=h(uid)).status_code == 201
+    by_offset = [e["id"] for p in range(0, 8, 3) for e in client.get(
+        f"/wallets/{wid}/statement?limit=3&offset={p}", headers=h(uid)).json()["entries"]]
+    seen, cursor = [], None
+    while True:
+        url = f"/wallets/{wid}/statement?limit=3" + (f"&cursor={cursor}" if cursor else "")
+        page = client.get(url, headers=h(uid)).json()
+        seen += [e["id"] for e in page["entries"]]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert seen == by_offset and len(seen) == len(set(seen)) == 8
+    assert client.get(f"/wallets/{wid}/statement?cursor=garbage", headers=h(uid)).status_code == 422
+    assert client.get(f"/wallets/{wid}/statement?cursor=x&offset=1", headers=h(uid)).status_code == 422
 
 
 def test_withdraw(client):
