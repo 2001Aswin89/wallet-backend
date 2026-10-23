@@ -1,9 +1,10 @@
-"""The nightly pipeline: reconciliation, then housekeeping. Flag explanations join in step 8."""
+"""The nightly pipeline: reconciliation, flag explanations, then housekeeping."""
 import logging
 
 import psycopg
 
 from app.config import DATABASE_URL
+from app.worker.explain_flags import explain_flags
 from app.worker.reconcile import run_reconciliation
 
 log = logging.getLogger("wallet.jobs")
@@ -20,4 +21,9 @@ def cleanup_idempotency_keys(dsn: str | None = None) -> int:
 def nightly() -> None:
     result = run_reconciliation(triggered_by="schedule")
     log.info("nightly reconciliation: %s", result)
+    try:                                  # an LLM outage must not stop the housekeeping below
+        from app.llm import get_llm
+        log.info("nightly flag explanations: %s", explain_flags(get_llm()))
+    except Exception:
+        log.exception("flag explanation step failed")
     cleanup_idempotency_keys()

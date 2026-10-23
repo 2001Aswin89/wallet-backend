@@ -4,3 +4,5 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://wallet:wallet@localh
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "change-me")
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "mock")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_MODEL = os.environ.get("LLM_MODEL", "")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")

@@ -33,6 +33,23 @@ def client():
         yield c
 
 
+@pytest.fixture(scope="session")
+def story(client):
+    from tests.qa_story import build_story
+    return build_story(client)
+
+
+@pytest.fixture
+def llm_override():
+    """Swap the LLM the app uses for the duration of a test."""
+    from app.llm import get_llm
+
+    def install(llm):
+        app.dependency_overrides[get_llm] = lambda: llm
+    yield install
+    app.dependency_overrides.pop(get_llm, None)
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
