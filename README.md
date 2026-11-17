@@ -30,7 +30,7 @@ Without Docker (what I used while building; any PostgreSQL 15+ works):
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt        # Windows: .venv\Scripts\...
 export DATABASE_URL=postgresql://wallet:wallet@localhost:5432/wallet    # an empty database
-pytest -v                          # about 3 minutes, almost all of it the 20 stampede runs
+pytest -v                          # 88 tests; 3+ minutes on Windows (the 20 stampede runs), 26 s inside Docker/Linux
 uvicorn app.main:app               # migrations run on startup
 python -m app.worker.scheduler     # the nightly worker
 ```
@@ -114,7 +114,7 @@ I use Serializable's cousin, Repeatable Read, only where one consistent snapshot
 
 **Evidence.** [docs/break-it.md](docs/break-it.md): without locks, 100 parallel transfers all passed their balance check
 (ledger -₹500, stored balance ₹410 to ₹430 across three runs). `tests/test_stampede.py`: ₹500 wallet, 100 concurrent ₹10 transfers, exactly 50
-succeed, ends at ₹0, debits = credits, **20 runs in a row** (about 7.7 s each through the HTTP API including setup), plus
+succeed, ends at ₹0, debits = credits, **20 runs in a row** (about 7.7 s each through the HTTP API including setup on my Windows machine; the whole 20-run test takes seconds inside Docker/Linux), plus
 50 A→B and 50 B→A at once with no deadlock. One hot row is bounded by commit latency: 100 transfers
 on one wallet took about 2 s directly against the database, roughly 20 ms each, because each holds the lock until its commit is durable.
 
@@ -274,13 +274,14 @@ Why OFFSET slows down: `EXPLAIN ANALYZE` at OFFSET 100,000 shows `idx_ledger_acc
 
 ## What is and is not verified
 
-* **Tested against real PostgreSQL 17.5** (no database mocks): the full suite (**88 tests passing**, 3 min 20 s, including 20 stampede runs), plus the measurements above.
-* **Not verified on this machine:** `docker compose up` and the GitHub Actions workflow. Docker was not installed here (and installing
-  Docker Desktop needs WSL2, admin rights and a reboot), so the Dockerfile, `docker-compose.yml` and `.github/workflows/ci.yml` are
-  written but have never been run. The application code is the same one the tests exercise. Run `docker compose up --build` once
-  before relying on them.
+* **Tested against real PostgreSQL** (no database mocks): the full suite, **88 tests passing**, including 20 stampede runs, plus the
+  measurements above. It passes two ways: against a local PostgreSQL 17.5 on Windows with Python 3.13 (3 min 20 s), and **inside
+  Docker Compose** (`postgres:16`, Python 3.12, `docker compose --profile tests run --rm tests`: 26 s).
+* **`docker compose up --build` verified** on Docker Desktop 29.9 / Compose 5.6: `db`, `api` and `worker` all start healthy, the
+  migration builds the schema from an empty database, `GET /health` returns `{"status":"ok","migrations":1,"system_accounts":3}`, and
+  the worker schedules the nightly job. If port 5432 is already in use on your machine, run `DB_PORT=5440 docker compose up --build`.
+* **Not verified:** the GitHub Actions workflow (`.github/workflows/ci.yml`) has never run on GitHub; it runs the same commands.
 * **Real LLM providers** (Gemini, Groq, Ollama) were written from public API docs and **never called** (no key). All tests use the mock.
-* Python 3.13 was used locally; the Dockerfile targets 3.12.
 * Numbers in this README come from runs on one Windows laptop with a local PostgreSQL (fsync on); treat them as relative, not absolute.
   Reproduce with `scripts/` (`seed`, `explain_checks`, `measure_pagination`, `measure_fraud`, `serializable_cost`, `isolation_lab`).
 
